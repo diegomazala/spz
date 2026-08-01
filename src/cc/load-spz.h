@@ -35,10 +35,12 @@ SOFTWARE.
 #include "splat-extensions.h"
 #endif
 
-namespace spz {
 #ifdef ANDROID
 #include <android/log.h>
+#endif
 
+namespace spz {
+#ifdef ANDROID
 static constexpr char LOG_TAG[] = "SPZ";
 template <class... Args>
 static void SpzLog(const char *fmt, Args &&...args) {
