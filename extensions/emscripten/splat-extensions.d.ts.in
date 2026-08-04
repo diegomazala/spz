@@ -1,6 +1,7 @@
 export enum SpzExtensionType {
   SPZ_ADOBE_safe_orbit_camera = 0xADBE0002,
   SPZ_ADOBE_coordinate_system = 0xADBE0003,
+  SPZ_NIANTIC_georeference = 0x4E530001,
 }
 
 export class SpzExtensionBase {
@@ -17,6 +18,23 @@ export class SpzExtensionSafeOrbitCameraAdobe extends SpzExtensionBase {
 
 export class SpzExtensionCoordinateSystemAdobe extends SpzExtensionBase {
   coordinateSystem: CoordinateSystem;
+  constructor();
+  static type(): SpzExtensionType;
+}
+
+export class SpzExtensionGeoreferenceNiantic extends SpzExtensionBase {
+  /** EPSG code of the target geocentric CRS, e.g. 4978 (WGS84 ECEF); 0 is reserved/invalid. */
+  crsEpsg: number;
+  /** Translation from the local origin to the target CRS, in meters (x, y, z). */
+  origin: [number, number, number];
+  /** Unit quaternion (x, y, z, w) rotating the local frame into the target CRS. */
+  rotation: [number, number, number, number];
+  /** Dimensionless uniform scale from the local frame into the target CRS; must be finite and > 0. */
+  scale: number;
+  /** Coordinate epoch as a decimal year; NaN when absent. */
+  epoch: number;
+  /** WKT2 string of the source compound CRS (provenance only); empty when absent. */
+  wkt: string;
   constructor();
   static type(): SpzExtensionType;
 }

@@ -2,6 +2,8 @@
 // This file contains all Python bindings related to SPZ extensions.
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/array.h>
+#include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/shared_ptr.h>
 
@@ -10,6 +12,7 @@
 #include "extensions/cc/splat-extensions.h"
 #include "extensions/cc/safe-orbit-camera-adobe.h"
 #include "extensions/cc/coordinate-system-adobe.h"
+#include "extensions/cc/georeference-niantic.h"
 #include "extensions/python/splat-extensions.h"
 
 namespace nb = nanobind;
@@ -33,6 +36,8 @@ void register_extensions(nb::module_& m) {
                "Adobe safe orbit camera extension")
         .value("SPZ_ADOBE_coordinate_system", spz::SpzExtensionType::SPZ_ADOBE_coordinate_system,
                "Adobe coordinate system extension — records the native coordinate system of the asset")
+        .value("SPZ_NIANTIC_georeference", spz::SpzExtensionType::SPZ_NIANTIC_georeference,
+               "Niantic georeference extension — similarity transform from the local frame to an Earth-centered CRS")
         .export_values();
 
     nb::class_<spz::SpzExtensionBase>(m, "SpzExtensionBase")
@@ -54,6 +59,22 @@ void register_extensions(nb::module_& m) {
         .def_rw("coordinate_system", &spz::SpzExtensionCoordinateSystemAdobe::coordinateSystem,
                 "Native coordinate system of the asset's Gaussian data")
         .def_static("type", &spz::SpzExtensionCoordinateSystemAdobe::type,
+                    "Static method to get the extension type enum value");
+    nb::class_<spz::SpzExtensionGeoreferenceNiantic, spz::SpzExtensionBase>(m, "SpzExtensionGeoreferenceNiantic")
+        .def(nb::init<>())
+        .def_rw("crs_epsg", &spz::SpzExtensionGeoreferenceNiantic::crsEpsg,
+                "EPSG code of the target geocentric CRS, e.g. 4978 (WGS84 ECEF); 0 is reserved/invalid")
+        .def_rw("origin", &spz::SpzExtensionGeoreferenceNiantic::origin,
+                "Translation from the local origin to the target CRS, in meters (x, y, z)")
+        .def_rw("rotation", &spz::SpzExtensionGeoreferenceNiantic::rotation,
+                "Unit quaternion (x, y, z, w) rotating the local frame into the target CRS")
+        .def_rw("scale", &spz::SpzExtensionGeoreferenceNiantic::scale,
+                "Dimensionless uniform scale from the local frame into the target CRS; must be finite and > 0")
+        .def_rw("epoch", &spz::SpzExtensionGeoreferenceNiantic::epoch,
+                "Coordinate epoch as a decimal year; NaN when absent")
+        .def_rw("wkt", &spz::SpzExtensionGeoreferenceNiantic::wkt,
+                "WKT2 string of the source compound CRS (provenance only); empty when absent")
+        .def_static("type", &spz::SpzExtensionGeoreferenceNiantic::type,
                     "Static method to get the extension type enum value");
     m.def("is_known_ply_extension_element", &spz::isKnownPlyExtensionElement, nb::arg("element_name"),
           "Returns True if the PLY extra element name is handled by an extension.");

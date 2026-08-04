@@ -252,6 +252,9 @@ This extension has the following attributes and default values:
   float safeOrbitRadiusMin = 0.0f;     // Minimum radius for safe orbit
 ```
 
+### Georeferencing
+
+With extension `SPZ_NIANTIC_georeference`, SPZ supports storing a similarity transform that places the asset on the Earth: a translation `origin` (meters), a unit quaternion `rotation`, and a dimensionless uniform `scale` map local positions into a geocentric CRS identified by an EPSG code (e.g. 4978, WGS84 ECEF) as `p_crs = scale * (q * p_local * q⁻¹) + origin`. `scale` corrects for the scale ambiguity inherent to unreferenced reconstruction (e.g. monocular SfM) and is uniform only — no anisotropic scale or shear is supported. An optional coordinate epoch (decimal year) and an optional WKT2 string recording the source compound CRS (provenance only) can also be stored. The library never applies the transform to the Gaussian data itself. See [extensions/README.md](extensions/README.md) for the payload layout and validation rules.
 
 ## Python Bindings
 
