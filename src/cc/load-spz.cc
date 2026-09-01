@@ -24,6 +24,7 @@ SOFTWARE.
 */
 
 #include "load-spz.h"
+#include "splat-utils.h"
 #include "splat-types.h"
 #ifdef SPZ_BUILD_EXTENSIONS
 #include "splat-extensions.h"
@@ -32,16 +33,13 @@ SOFTWARE.
 #include <zlib.h>
 #include <zstd.h>
 
-#ifdef ANDROID
-#include <android/log.h>
-#endif
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -49,42 +47,6 @@ SOFTWARE.
 namespace spz {
 
 namespace {
-
-// Scale factor for DC color components. To convert to RGB, we should multiply by 0.282, but it can
-// be useful to represent base colors that are out of range if the higher spherical harmonics bands
-// bring them back into range so we multiply by a smaller value.
-constexpr float colorScale = 0.15f;
-constexpr float sqrt1_2 = (float)0.707106781186547524401; // 1/sqrt(2)
-
-int32_t degreeForDim(int32_t dim) {
-  if (dim < 3)
-    return 0;
-  if (dim < 8)
-    return 1;
-  if (dim < 15)
-    return 2;
-  if (dim < 24)
-    return 3;
-  return 4;
-}
-
-int32_t dimForDegree(int32_t degree) {
-  switch (degree) {
-    case 0:
-      return 0;
-    case 1:
-      return 3;
-    case 2:
-      return 8;
-    case 3:
-      return 15;
-    case 4:
-      return 24;
-    default:
-      SpzLog("[SPZ: ERROR] Unsupported SH degree: %d\n", degree);
-      return 0;
-  }
-}
 
 uint8_t toUint8(float x) { return static_cast<uint8_t>(std::clamp(std::round(x), 0.0f, 255.0f)); }
 
@@ -95,11 +57,7 @@ uint8_t quantizeSH(float x, int32_t bucketSize) {
   return static_cast<uint8_t>(std::clamp(q, 0, 255));
 }
 
-float unquantizeSH(uint8_t x) { return (static_cast<float>(x) - 128.0f) / 128.0f; }
-
 float sigmoid(float x) { return 1 / (1 + std::exp(-x)); }
-
-float invSigmoid(float x) { return std::log(x / (1.0f - x)); }
 
 template <typename T>
 size_t countBytes(std::vector<T> vec) {
@@ -143,6 +101,24 @@ bool checkSizes(const PackedGaussians &packed, int32_t numPoints, int32_t shDim,
 
 constexpr uint8_t FlagAntialiased = 0x1;
 constexpr uint8_t FlagHasExtensions = 0x2;
+
+// Generous upper bound on the zstd compression ratio (uncompressed / compressed) used to
+// sanity-check numPoints against the actual file size. Real packed-gaussian streams compress
+// well below this; the bound only exists to reject headers that claim vastly more points than
+// any legitimate file of the given size could contain. Effective ceiling is
+//   maxPoints = (fileSize * kMaxCompressionRatio) / kMinBytesPerPoint
+// Examples (kMaxCompressionRatio=1024, kMinBytesPerPoint=9):
+//   file size      max numPoints accepted
+//      1 KB        ~116 K
+//      1 MB        ~119 M
+//    100 MB        ~11.9 B   (far above any realistic scene)
+//      1 GB        ~119 B    (effectively unlimited)
+// A 32-byte file is capped at ~3.6 K points, so a header claiming billions of points in a
+// tiny file is rejected immediately.
+// 64-bit so the `size * kMaxCompressionRatio` product below can't overflow on 32-bit targets
+// (e.g. wasm32, where size_t is 32-bit and the multiply wraps for files >= 4 MiB).
+constexpr uint64_t kMaxCompressionRatio = 1024;
+constexpr uint64_t kMinBytesPerPoint = 9;  // positions stream alone: 3 components * 3 bytes
 
 struct NgspFileHeader {
   uint32_t magic          = NGSP_MAGIC;
@@ -446,54 +422,6 @@ PackedGaussians packGaussians(const GaussianCloud &g, const PackOptions &o) {
   return packed;
 }
 
-void unpackQuaternionFirstThree(float rotation[4], const uint8_t r[3], const CoordinateConverter& c = CoordinateConverter())
-{
-  Vec3f xyz = 
-    plus(
-      times(
-        Vec3f{ static_cast<float>(r[0]), static_cast<float>(r[1]), static_cast<float>(r[2]) },
-        1.0f / 127.5f),
-      Vec3f{ -1, -1, -1 });
-  std::copy(xyz.data(), xyz.data() + 3, &rotation[0]);
-  // Compute the real component - we know the quaternion is normalized and w is non-negative
-  rotation[3] = std::sqrt(std::max(0.0f, 1.0f - squaredNorm(xyz)));
-  if (c.rotFlipQFunc) { c.rotFlipQFunc(rotation); }
-  else { for (int i = 0; i < 3; i++) rotation[i] *= c.flipQ[i]; }
-}
-
-void unpackQuaternionSmallestThree(float rotation[4], const uint8_t r[4], const CoordinateConverter& c = CoordinateConverter())
-{
-  uint32_t comp =
-    r[0] +
-    (r[1] << 8) +
-    (r[2] << 16) +
-    (r[3] << 24);
-
-  constexpr uint32_t c_mask = (1u << 9u) - 1u;
-
-  const int i_largest = comp >> 30;
-  float sum_squares = 0;
-  // [unroll]
-  for (int i = 3; i >= 0; --i)
-  {
-    if (i != i_largest)
-    {
-      uint32_t mag    = comp & c_mask;
-      uint32_t negbit = (comp >> 9u) & 0x1u;
-      comp            = comp >> 10u;
-      rotation[i]     = sqrt1_2 * ((float)mag) / float(c_mask);
-      if (negbit == 1)
-      {
-        rotation[i] = -rotation[i];
-      }
-      sum_squares += rotation[i] * rotation[i];
-    }
-  }
-  rotation[i_largest] = sqrt(1.0f - sum_squares);
-  if (c.rotFlipQFunc) { c.rotFlipQFunc(rotation); }
-  else { for (int i = 0; i < 3; i++) rotation[i] *= c.flipQ[i]; }
-}
-
 UnpackedGaussian PackedGaussian::unpack(
   bool usesFloat16, bool usesQuaternionSmallestThree, int32_t fractionalBits, const CoordinateConverter &c) const {
   UnpackedGaussian result;
@@ -742,6 +670,10 @@ bool decompressNgspStreams(const uint8_t *data, size_t size,
     std::memcpy(&infos[i].compressedSize, data + e, sizeof(uint64_t));
     std::memcpy(&infos[i].uncompressedSize, data + e + sizeof(uint64_t), sizeof(uint64_t));
     infos[i].compressedOffset = compressedOffset;
+    if (infos[i].compressedSize > size - compressedOffset) {
+      SpzLog("[SPZ ERROR] decompressNgspStreams: stream extends past end of data");
+      return false;
+    }
     compressedOffset += infos[i].compressedSize;
     if (infos[i].uncompressedSize != dests[i].second) {
       SpzLog("[SPZ ERROR] decompressNgspStreams: stream size mismatch");
@@ -852,9 +784,9 @@ PackedGaussians loadPackedGaussiansFromNgsp(const uint8_t *data, size_t size,
 
   // Build destination list in the same order saveSpz writes streams, skipping zero-size buffers.
   std::vector<std::pair<uint8_t *, size_t>> dests;
-  for (auto *v : {&result.positions, &result.alphas, &result.colors,
-                  &result.scales, &result.rotations, &result.sh}) {
-    if (!v->empty()) dests.push_back({v->data(), v->size()});
+  for (auto attr : kAllSplatAttributes) {
+    auto &v = packedBuffer(result, attr);
+    if (!v.empty()) dests.push_back({v.data(), v.size()});
   }
 
   if (!decompressNgspStreams(data, size, header, dests)) {
@@ -893,8 +825,27 @@ PackedGaussians deserializePackedGaussians(std::istream &in) {
     SpzLog("[SPZ ERROR] deserializePackedGaussians: version not supported: %d", header.version);
     return {};
   }
-  if (header.numPoints <= 0) {
-    SpzLog("[SPZ ERROR] deserializePackedGaussians: invalid point count: %d", header.numPoints);
+  // Bound numPoints against the bytes actually remaining in the decompressed legacy stream.
+  // Legacy files are already gzip-decompressed at this point, so the ratio of header-claimed
+  // points to remaining bytes can't exceed ~1 point per kMinBytesPerPoint bytes.
+  size_t remaining = 0;
+  {
+    const std::streampos cur = in.tellg();
+    if (cur != std::streampos(-1)) {
+      in.seekg(0, std::ios::end);
+      const std::streampos end = in.tellg();
+      in.seekg(cur);
+      if (end != std::streampos(-1)) remaining = static_cast<size_t>(end - cur);
+    }
+  }
+  // Same INT32_MAX cap as the NGSP path: numPoints is consumed as int32_t below, so values
+  // above INT32_MAX would wrap negative. This also bounds numPoints when the size probe above
+  // fails (remaining == 0), in which case the ratio check is skipped.
+  if (header.numPoints == 0 ||
+      header.numPoints > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ||
+      (remaining > 0 &&
+       static_cast<size_t>(header.numPoints) > remaining / kMinBytesPerPoint)) {
+    SpzLog("[SPZ ERROR] deserializePackedGaussians: invalid point count: %u", header.numPoints);
     return {};
   }
   if (header.shDegree > SH_MAX_DEGREE) {
@@ -1049,8 +1000,16 @@ PackedGaussians loadSpzPacked(const uint8_t *data, size_t size) {
       SpzLog("[SPZ ERROR] loadSpzPacked: unsupported version: %d", header.version);
       return {};
     }
-    if (header.numPoints == 0) {
-      SpzLog("[SPZ ERROR] loadSpzPacked: invalid point count");
+    // numPoints is stored unsigned but consumed as int32_t downstream (loadPackedGaussiansFromNgsp),
+    // so reject anything above INT32_MAX up front — otherwise the cast wraps negative. The
+    // file-size ratio check below is evaluated in 64-bit to avoid overflowing the multiply on
+    // 32-bit targets.
+    if (header.numPoints == 0 ||
+        header.numPoints > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ||
+        static_cast<uint64_t>(header.numPoints) >
+          (static_cast<uint64_t>(size) * kMaxCompressionRatio) / kMinBytesPerPoint) {
+      SpzLog("[SPZ ERROR] loadSpzPacked: invalid point count: %u (file size %zu)",
+             header.numPoints, size);
       return {};
     }
     SpzLog(
@@ -1389,71 +1348,17 @@ GaussianCloud loadSplatFromPly(const std::string &filename, const UnpackOptions 
 }
 
 bool saveSplatToPly(const GaussianCloud &data, const PackOptions &o, const std::string &filename) {
-  const int32_t N = data.numPoints;
+  // Use int64_t for N so that N*D never overflows int32_t for clouds with >35M gaussians.
+  const int64_t N = data.numPoints;
   CHECK_EQ(data.positions.size(), N * 3);
   CHECK_EQ(data.scales.size(), N * 3);
   CHECK_EQ(data.rotations.size(), N * 4);
   CHECK_EQ(data.alphas.size(), N);
   CHECK_EQ(data.colors.size(), N * 3);
-  const int32_t shDim = static_cast<int>(data.sh.size() / N / 3);
-  const int32_t D = 17 + shDim * 3;
+  const int64_t shDim = (N > 0) ? static_cast<int64_t>(data.sh.size() / N / 3) : 0;
+  const int64_t D = 17 + shDim * 3;
 
   CoordinateConverter c = coordinateConverter(o.from, CoordinateSystem::RDF, data.shDegree);
-
-  std::vector<float> values(N * D, 0.0f);
-  std::array<float, 4> bufQuat = {};
-  int32_t outIdx = 0, i3 = 0, i4 = 0;
-  for (int32_t i = 0; i < N; i++) {
-    // Position (x, y, z)
-    for (size_t j = 0; j < 3; j++) { values[outIdx + j] = data.positions[i3 + j]; }
-    if (c.rotFlipPFunc) {
-      c.rotFlipPFunc(values.data() + outIdx);
-    } else {
-      for (size_t j = 0; j < 3; j++) { values[outIdx + j] *= c.flipP[j]; }
-    }
-    outIdx += 3;
-    // Normals (nx, ny, nz): these are always zero, but some viewers expect them to be present
-    outIdx += 3;
-    // Color (r, g, b): DC component for spherical harmonics
-    values[outIdx++] = data.colors[i3 + 0];
-    values[outIdx++] = data.colors[i3 + 1];
-    values[outIdx++] = data.colors[i3 + 2];
-    // Spherical harmonics: Interleave so the coefficients are the fastest-changing axis and
-    // the channel (r, g, b) is slower-changing axis.
-    for (int32_t k = 0; k < 3; k++) {
-      for (int32_t j = 0; j < shDim; j++) {
-        values[outIdx + j] = data.sh[(i * shDim + j) * 3 + k];
-      }
-      for (int32_t band = 0; band < data.shDegree && band < SH_MAX_DEGREE; ++band) {
-        if (c.rotFlipShFuncs[static_cast<size_t>(band)]) {
-          c.rotFlipShFuncs[static_cast<size_t>(band)](values.data() + outIdx + static_cast<size_t>(band * (band + 2)));
-        }
-      }
-      for (int32_t j = 0; j < shDim; j++) { values[outIdx + j] *= c.flipSh[j]; }
-      outIdx += shDim;
-    }
-    // Alpha
-    values[outIdx++] = data.alphas[i];
-    // Scale (sx, sy, sz)
-    values[outIdx++] = data.scales[i3 + 0];
-    values[outIdx++] = data.scales[i3 + 1];
-    values[outIdx++] = data.scales[i3 + 2];
-    // Rotation (qw, qx, qy, qz)
-    for (int32_t j = 0; j < 4; j++) { bufQuat[j] = data.rotations[i4 + j]; }
-    if (c.rotFlipQFunc) {
-      c.rotFlipQFunc(bufQuat.data());
-    } else {
-      for (int32_t j = 0; j < 3; j++) { bufQuat[j] *= c.flipQ[j]; }
-    }
-    // data.rotations are x,y,z,w per point; PLY expects w then x,y,z (see property order below).
-    values[outIdx++] = bufQuat[3];
-    values[outIdx++] = bufQuat[0];
-    values[outIdx++] = bufQuat[1];
-    values[outIdx++] = bufQuat[2];
-    i3 += 3;
-    i4 += 4;
-  }
-  CHECK_EQ(outIdx, values.size());
 
   std::ofstream out(filename, std::ios::binary);
   if (!out.good()) {
@@ -1472,7 +1377,7 @@ bool saveSplatToPly(const GaussianCloud &data, const PackOptions &o, const std::
   out << "property float f_dc_0\n";
   out << "property float f_dc_1\n";
   out << "property float f_dc_2\n";
-  for (int32_t i = 0; i < shDim * 3; i++) {
+  for (int64_t i = 0; i < shDim * 3; i++) {
     out << "property float f_rest_" << i << "\n";
   }
   out << "property float opacity\n";
@@ -1489,7 +1394,72 @@ bool saveSplatToPly(const GaussianCloud &data, const PackOptions &o, const std::
 #endif
 
   out << "end_header\n";
-  out.write(reinterpret_cast<char *>(values.data()), values.size() * sizeof(float));
+
+  // Write in chunks of 1M points to bound peak memory regardless of cloud size.
+  const int64_t kChunkSize = 1'000'000;
+  std::vector<float> values(std::min(kChunkSize, N) * D);
+  std::array<float, 4> bufQuat = {};
+  for (int64_t start = 0; start < N; start += kChunkSize) {
+    const int64_t end = std::min(start + kChunkSize, N);
+    const int64_t rowCount = end - start;
+    if (rowCount * D != static_cast<int64_t>(values.size())) {
+      values.resize(rowCount * D);
+    }
+    int64_t outIdx = 0;
+    for (int64_t i = start; i < end; i++) {
+      const int64_t i3 = i * 3;
+      const int64_t i4 = i * 4;
+      // Position (x, y, z)
+      for (size_t j = 0; j < 3; j++) { values[outIdx + j] = data.positions[i3 + j]; }
+      if (c.rotFlipPFunc) {
+        c.rotFlipPFunc(values.data() + outIdx);
+      } else {
+        for (size_t j = 0; j < 3; j++) { values[outIdx + j] *= c.flipP[j]; }
+      }
+      outIdx += 3;
+      // Normals (nx, ny, nz): always zero, but some viewers expect them present
+      values[outIdx] = 0.0f; values[outIdx + 1] = 0.0f; values[outIdx + 2] = 0.0f;
+      outIdx += 3;
+      // Color (r, g, b): DC component for spherical harmonics
+      values[outIdx++] = data.colors[i3 + 0];
+      values[outIdx++] = data.colors[i3 + 1];
+      values[outIdx++] = data.colors[i3 + 2];
+      // Spherical harmonics: Interleave so the coefficients are the fastest-changing axis and
+      // the channel (r, g, b) is slower-changing axis.
+      for (int64_t k = 0; k < 3; k++) {
+        for (int64_t j = 0; j < shDim; j++) {
+          values[outIdx + j] = data.sh[(i * shDim + j) * 3 + k];
+        }
+        for (int32_t band = 0; band < data.shDegree && band < SH_MAX_DEGREE; ++band) {
+          if (c.rotFlipShFuncs[static_cast<size_t>(band)]) {
+            c.rotFlipShFuncs[static_cast<size_t>(band)](values.data() + outIdx + static_cast<size_t>(band * (band + 2)));
+          }
+        }
+        for (int64_t j = 0; j < shDim; j++) { values[outIdx + j] *= c.flipSh[j]; }
+        outIdx += shDim;
+      }
+      // Alpha
+      values[outIdx++] = data.alphas[i];
+      // Scale (sx, sy, sz)
+      values[outIdx++] = data.scales[i3 + 0];
+      values[outIdx++] = data.scales[i3 + 1];
+      values[outIdx++] = data.scales[i3 + 2];
+      // Rotation (qw, qx, qy, qz)
+      for (int32_t j = 0; j < 4; j++) { bufQuat[j] = data.rotations[i4 + j]; }
+      if (c.rotFlipQFunc) {
+        c.rotFlipQFunc(bufQuat.data());
+      } else {
+        for (int32_t j = 0; j < 3; j++) { bufQuat[j] *= c.flipQ[j]; }
+      }
+      // data.rotations are x,y,z,w per point; PLY expects w then x,y,z (see property order below).
+      values[outIdx++] = bufQuat[3];
+      values[outIdx++] = bufQuat[0];
+      values[outIdx++] = bufQuat[1];
+      values[outIdx++] = bufQuat[2];
+    }
+    CHECK_EQ(outIdx, rowCount * D);
+    out.write(reinterpret_cast<char *>(values.data()), rowCount * D * sizeof(float));
+  }
 
 #ifdef SPZ_BUILD_EXTENSIONS
   writeExtensionsToPlyData(data.extensions, out);

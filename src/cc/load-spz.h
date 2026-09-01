@@ -35,6 +35,10 @@ SOFTWARE.
 #include "splat-extensions.h"
 #endif
 
+#ifdef ANDROID
+#include <android/log.h>
+#endif
+
 namespace spz {
 #ifdef ANDROID
 static constexpr char LOG_TAG[] = "SPZ";
