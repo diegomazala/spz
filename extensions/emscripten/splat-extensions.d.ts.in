@@ -4,6 +4,11 @@ export enum SpzExtensionType {
   SPZ_NIANTIC_georeference = 0x4E530001,
 }
 
+export enum ProvenanceCrsEncoding {
+  WKT2 = 0,
+  PROJJSON = 1,
+}
+
 export class SpzExtensionBase {
   readonly extensionType: SpzExtensionType;
 }
@@ -33,8 +38,10 @@ export class SpzExtensionGeoreferenceNiantic extends SpzExtensionBase {
   scale: number;
   /** Coordinate epoch: decimal year the coordinates are valid at; NaN when absent. */
   epoch: number;
-  /** WKT2 of the source compound CRS; provenance only, never a transform source. */
-  provenanceWkt: string;
+  /** Source compound CRS; provenance only, never a transform source. */
+  provenanceCrs: string;
+  /** Serialization of `provenanceCrs`: WKT2 (default) or PROJJSON. */
+  provenanceCrsEncoding: ProvenanceCrsEncoding;
   constructor();
   static type(): SpzExtensionType;
 }

@@ -105,34 +105,40 @@ def test_toc_byte_offset_advances_with_extensions():
 # fixed 32-byte header, then the record at offset 32:
 #   [u32 type @32][u32 byteLength @36][payload @40]
 # Payload offsets within the file: ext_version @40, flags @41, crs_id_length @42,
-# provenance_wkt_length @44, origin @48, rotation @72, scale @104, epoch @112,
-# crs_id @120, provenance_wkt @120+crs_id_length.
+# provenance_crs_length @44, origin @48, rotation @72, scale @104, epoch @112,
+# crs_id @120, provenance_crs @120+crs_id_length.
 _GEOREF_TYPE = 0x4E530001
 _GEOREF_RECORD_OFFSET = 32
 _GEOREF_PAYLOAD_OFFSET = 40
 _GEOREF_CRS_ID_LENGTH_OFFSET = 42
-_GEOREF_PROVENANCE_WKT_LENGTH_OFFSET = 44
+_GEOREF_PROVENANCE_CRS_LENGTH_OFFSET = 44
 _GEOREF_FIXED_PAYLOAD_BYTES = 80
 _GEOREF_CRS_ID_OFFSET = _GEOREF_PAYLOAD_OFFSET + _GEOREF_FIXED_PAYLOAD_BYTES
 # Guard against silent layout drift.
-assert _GEOREF_CRS_ID_LENGTH_OFFSET + 2 == _GEOREF_PROVENANCE_WKT_LENGTH_OFFSET
+assert _GEOREF_CRS_ID_LENGTH_OFFSET + 2 == _GEOREF_PROVENANCE_CRS_LENGTH_OFFSET
 assert _GEOREF_PAYLOAD_OFFSET + _GEOREF_FIXED_PAYLOAD_BYTES == _GEOREF_CRS_ID_OFFSET
 _GEOREF_MAX_CRS_ID_BYTES = 256
+_GEOREF_FLAGS_OFFSET = _GEOREF_PAYLOAD_OFFSET + 1
+_PROJJSON_SAMPLE = '{"type":"GeographicCRS","name":"WGS 84"}'
 
-_PROVENANCE_WKT_SAMPLE = (
+_PROVENANCE_CRS_SAMPLE = (
     'COMPOUNDCRS["WGS 84 + EGM2008 height",'
     'GEOGCRS["WGS 84"],VERTCRS["EGM2008 height"]]'
 )
 
 
-def _make_georef_ext(provenance_wkt="", epoch=float("nan"), scale=0.9736, crs_id="EPSG:4978"):
+def _make_georef_ext(
+    provenance_crs="", epoch=float("nan"), scale=0.9736, crs_id="EPSG:4978", encoding=None
+):
     ext = spz.SpzExtensionGeoreferenceNiantic()
     ext.crs_id = crs_id
     ext.origin = [4194304.5, -555555.25, 4713930.125]
     ext.rotation = [0.5, 0.5, 0.5, 0.5]
     ext.scale = scale
     ext.epoch = epoch
-    ext.provenance_wkt = provenance_wkt
+    ext.provenance_crs = provenance_crs
+    if encoding is not None:
+        ext.provenance_crs_encoding = encoding
     return ext
 
 
@@ -158,13 +164,13 @@ def _patch_file(filename, offset, data):
 
 @pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
 @pytest.mark.parametrize(
-    "provenance_wkt", ["", _PROVENANCE_WKT_SAMPLE], ids=["no_provenance_wkt", "with_provenance_wkt"]
+    "provenance_crs", ["", _PROVENANCE_CRS_SAMPLE], ids=["no_provenance_crs", "with_provenance_crs"]
 )
 @pytest.mark.parametrize("epoch", [float("nan"), 2025.5], ids=["no_epoch", "with_epoch"])
-def test_georeference_round_trip(provenance_wkt, epoch):
+def test_georeference_round_trip(provenance_crs, epoch):
     """Georeference extension fields survive a save/load round-trip exactly."""
     cloud = _make_cloud()
-    ext = _make_georef_ext(provenance_wkt=provenance_wkt, epoch=epoch)
+    ext = _make_georef_ext(provenance_crs=provenance_crs, epoch=epoch)
     cloud.extensions = [ext]
 
     filename = _save_to_tmp(cloud, "georef_round_trip.spz")
@@ -178,7 +184,8 @@ def test_georeference_round_trip(provenance_wkt, epoch):
     assert loaded_ext.origin == ext.origin
     assert loaded_ext.rotation == ext.rotation
     assert loaded_ext.scale == ext.scale
-    assert loaded_ext.provenance_wkt == ext.provenance_wkt
+    assert loaded_ext.provenance_crs == ext.provenance_crs
+    assert loaded_ext.provenance_crs_encoding == ext.provenance_crs_encoding
     if math.isnan(epoch):
         assert math.isnan(loaded_ext.epoch)
     else:
@@ -193,7 +200,7 @@ def test_georeference_coexists_with_safe_orbit():
     orbit.safe_orbit_elevation_min = -0.5
     orbit.safe_orbit_elevation_max = 1.2
     orbit.safe_orbit_radius_min = 0.3
-    georef = _make_georef_ext(provenance_wkt=_PROVENANCE_WKT_SAMPLE, epoch=2025.5)
+    georef = _make_georef_ext(provenance_crs=_PROVENANCE_CRS_SAMPLE, epoch=2025.5)
     cloud.extensions = [orbit, georef]
 
     filename = _save_to_tmp(cloud, "georef_coexist.spz")
@@ -214,7 +221,7 @@ def test_georeference_coexists_with_safe_orbit():
     assert loaded_georef.rotation == georef.rotation
     assert loaded_georef.scale == georef.scale
     assert loaded_georef.epoch == georef.epoch
-    assert loaded_georef.provenance_wkt == georef.provenance_wkt
+    assert loaded_georef.provenance_crs == georef.provenance_crs
 
 
 @pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
@@ -228,7 +235,7 @@ def test_georeference_skip_path_preserves_core_data():
     baseline_file = _save_to_tmp(cloud, "georef_skip_baseline.spz")
     baseline = spz.load_spz(baseline_file, spz.UnpackOptions())
 
-    cloud.extensions = [_make_georef_ext(provenance_wkt=_PROVENANCE_WKT_SAMPLE)]
+    cloud.extensions = [_make_georef_ext(provenance_crs=_PROVENANCE_CRS_SAMPLE)]
     filename = _save_to_tmp(cloud, "georef_skip.spz")
     _patch_file(filename, _GEOREF_RECORD_OFFSET, struct.pack("<I", 0x7A7A0001))
 
@@ -243,7 +250,7 @@ def test_georeference_truncated_fixed_section_skipped():
     cloud = _make_cloud()
     baseline = spz.load_spz(_save_to_tmp(cloud, "georef_trunc_baseline.spz"), spz.UnpackOptions())
 
-    cloud.extensions = [_make_georef_ext(provenance_wkt=_PROVENANCE_WKT_SAMPLE)]
+    cloud.extensions = [_make_georef_ext(provenance_crs=_PROVENANCE_CRS_SAMPLE)]
     filename = _save_to_tmp(cloud, "georef_trunc.spz")
     with open(filename, "rb") as f:
         toc_offset = struct.unpack_from("<I", f.read(32), 16)[0]
@@ -254,7 +261,7 @@ def test_georeference_truncated_fixed_section_skipped():
     truncated_len = 10
     filler_offset = _GEOREF_PAYLOAD_OFFSET + truncated_len
     filler_payload_len = toc_offset - filler_offset - 8
-    assert filler_payload_len >= 0, "provenance_wkt sample too short to carve a filler record"
+    assert filler_payload_len >= 0, "provenance_crs sample too short to carve a filler record"
     _patch_file(filename, _GEOREF_RECORD_OFFSET + 4, struct.pack("<I", truncated_len))
     _patch_file(filename, filler_offset, struct.pack("<II", 0x7A7A0002, filler_payload_len))
 
@@ -264,14 +271,14 @@ def test_georeference_truncated_fixed_section_skipped():
 
 
 @pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
-def test_georeference_provenance_wkt_length_overrun_skipped():
-    """A provenance_wkt_length exceeding the payload is rejected and core data still loads."""
+def test_georeference_provenance_crs_length_overrun_skipped():
+    """A provenance_crs_length exceeding the payload is rejected and core data still loads."""
     cloud = _make_cloud()
-    baseline = spz.load_spz(_save_to_tmp(cloud, "georef_provenancewkt_overrun_baseline.spz"), spz.UnpackOptions())
+    baseline = spz.load_spz(_save_to_tmp(cloud, "georef_provenancecrs_overrun_baseline.spz"), spz.UnpackOptions())
 
-    cloud.extensions = [_make_georef_ext(provenance_wkt=_PROVENANCE_WKT_SAMPLE)]
-    filename = _save_to_tmp(cloud, "georef_provenancewkt_overrun.spz")
-    _patch_file(filename, _GEOREF_PROVENANCE_WKT_LENGTH_OFFSET, struct.pack("<I", 0xFFFF0000))
+    cloud.extensions = [_make_georef_ext(provenance_crs=_PROVENANCE_CRS_SAMPLE)]
+    filename = _save_to_tmp(cloud, "georef_provenancecrs_overrun.spz")
+    _patch_file(filename, _GEOREF_PROVENANCE_CRS_LENGTH_OFFSET, struct.pack("<I", 0xFFFF0000))
 
     loaded = spz.load_spz(filename, spz.UnpackOptions())
     assert len(loaded.extensions) == 0
@@ -286,7 +293,7 @@ def test_georeference_crs_id_length_overrun_skipped():
         _save_to_tmp(cloud, "georef_crsid_overrun_baseline.spz"), spz.UnpackOptions()
     )
 
-    cloud.extensions = [_make_georef_ext(provenance_wkt=_PROVENANCE_WKT_SAMPLE)]
+    cloud.extensions = [_make_georef_ext(provenance_crs=_PROVENANCE_CRS_SAMPLE)]
     filename = _save_to_tmp(cloud, "georef_crsid_overrun.spz")
     _patch_file(filename, _GEOREF_CRS_ID_LENGTH_OFFSET, struct.pack("<H", 0xFFFF))
 
@@ -394,23 +401,66 @@ def test_georeference_invalid_scale_skipped(scale):
 
 
 @pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
-def test_georeference_oversized_provenance_wkt_omitted_on_write():
-    """A provenance_wkt beyond the 1 MiB write cap is omitted (not truncated); the rest round-trips."""
+def test_georeference_oversized_provenance_crs_omitted_on_write():
+    """A provenance_crs beyond the 1 MiB write cap is omitted (not truncated); the rest round-trips."""
     cloud = _make_cloud()
     ext = _make_georef_ext(epoch=2025.5)
-    ext.provenance_wkt = "A" * ((1 << 20) + 1)
+    ext.provenance_crs = "A" * ((1 << 20) + 1)
     cloud.extensions = [ext]
 
-    filename = _save_to_tmp(cloud, "georef_oversized_provenance_wkt.spz")
+    filename = _save_to_tmp(cloud, "georef_oversized_provenance_crs.spz")
     loaded = spz.load_spz(filename, spz.UnpackOptions())
     assert len(loaded.extensions) == 1
     e = loaded.extensions[0]
-    assert e.provenance_wkt == ""
+    assert e.provenance_crs == ""
     assert e.crs_id == ext.crs_id
     assert e.origin == ext.origin
     assert e.rotation == ext.rotation
     assert e.scale == ext.scale
     assert e.epoch == ext.epoch
+
+
+@pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
+@pytest.mark.parametrize(
+    "encoding,payload",
+    [
+        (spz.ProvenanceCrsEncoding.WKT2, _PROVENANCE_CRS_SAMPLE),
+        (spz.ProvenanceCrsEncoding.PROJJSON, _PROJJSON_SAMPLE),
+    ],
+    ids=["wkt2", "projjson"],
+)
+def test_georeference_provenance_crs_encoding_round_trips(encoding, payload):
+    """provenance_crs is never of unknown syntax: its encoding round-trips with it."""
+    cloud = _make_cloud()
+    cloud.extensions = [_make_georef_ext(provenance_crs=payload, encoding=encoding)]
+
+    loaded = spz.load_spz(_save_to_tmp(cloud, "georef_prov_encoding.spz"), spz.UnpackOptions())
+    assert len(loaded.extensions) == 1
+    assert loaded.extensions[0].provenance_crs == payload
+    assert loaded.extensions[0].provenance_crs_encoding == encoding
+
+
+@pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
+def test_georeference_unknown_provenance_encoding_drops_string_keeps_transform():
+    """An unassigned encoding drops provenance_crs but must not invalidate the transform."""
+    cloud = _make_cloud()
+    ext = _make_georef_ext(provenance_crs=_PROVENANCE_CRS_SAMPLE)
+    cloud.extensions = [ext]
+    filename = _save_to_tmp(cloud, "georef_prov_unknown_encoding.spz")
+
+    # Set encoding bits 2-3 to 3 (unassigned), keeping has_provenance_crs set.
+    with open(filename, "rb") as f:
+        f.seek(_GEOREF_FLAGS_OFFSET)
+        flags = f.read(1)[0]
+    _patch_file(filename, _GEOREF_FLAGS_OFFSET, struct.pack("<B", flags | 0x0C))
+
+    loaded = spz.load_spz(filename, spz.UnpackOptions())
+    assert len(loaded.extensions) == 1
+    e = loaded.extensions[0]
+    assert e.provenance_crs == ""
+    assert e.crs_id == ext.crs_id
+    assert e.origin == ext.origin
+    assert e.scale == ext.scale
 
 
 @pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")

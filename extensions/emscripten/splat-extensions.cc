@@ -58,6 +58,10 @@ void register_extensions() {
       .property("coordinateSystem", &spz::SpzExtensionCoordinateSystemAdobe::coordinateSystem)
       .class_function("type", &spz::SpzExtensionCoordinateSystemAdobe::type);
 
+  ::emscripten::enum_<spz::SpzExtensionGeoreferenceNiantic::ProvenanceCrsEncoding>("ProvenanceCrsEncoding")
+      .value("WKT2", spz::SpzExtensionGeoreferenceNiantic::ProvenanceCrsEncoding::Wkt2)
+      .value("PROJJSON", spz::SpzExtensionGeoreferenceNiantic::ProvenanceCrsEncoding::Projjson);
+
   ::emscripten::value_array<std::array<double, 3>>("ArrayDouble3")
       .element(::emscripten::index<0>())
       .element(::emscripten::index<1>())
@@ -76,7 +80,9 @@ void register_extensions() {
       .property("rotation", &spz::SpzExtensionGeoreferenceNiantic::rotation)
       .property("scale", &spz::SpzExtensionGeoreferenceNiantic::scale)
       .property("epoch", &spz::SpzExtensionGeoreferenceNiantic::epoch)
-      .property("provenanceWkt", &spz::SpzExtensionGeoreferenceNiantic::provenanceWkt)
+      .property("provenanceCrs", &spz::SpzExtensionGeoreferenceNiantic::provenanceCrs)
+      .property("provenanceCrsEncoding",
+                &spz::SpzExtensionGeoreferenceNiantic::provenanceCrsEncoding)
       .class_function("type", &spz::SpzExtensionGeoreferenceNiantic::type);
 
   ::emscripten::function("isKnownPlyExtensionElement", &spz::isKnownPlyExtensionElement);

@@ -60,6 +60,11 @@ void register_extensions(nb::module_& m) {
                 "Native coordinate system of the asset's Gaussian data")
         .def_static("type", &spz::SpzExtensionCoordinateSystemAdobe::type,
                     "Static method to get the extension type enum value");
+    nb::enum_<spz::SpzExtensionGeoreferenceNiantic::ProvenanceCrsEncoding>(
+        m, "ProvenanceCrsEncoding", "Serialization of SpzExtensionGeoreferenceNiantic.provenance_crs")
+        .value("WKT2", spz::SpzExtensionGeoreferenceNiantic::ProvenanceCrsEncoding::Wkt2)
+        .value("PROJJSON", spz::SpzExtensionGeoreferenceNiantic::ProvenanceCrsEncoding::Projjson)
+        .export_values();
     nb::class_<spz::SpzExtensionGeoreferenceNiantic, spz::SpzExtensionBase>(m, "SpzExtensionGeoreferenceNiantic")
         .def(nb::init<>())
         .def_rw("crs_id", &spz::SpzExtensionGeoreferenceNiantic::crsId,
@@ -72,8 +77,11 @@ void register_extensions(nb::module_& m) {
                 "Dimensionless uniform scale from the local frame into the target CRS; must be finite and > 0")
         .def_rw("epoch", &spz::SpzExtensionGeoreferenceNiantic::epoch,
                 "Coordinate epoch: decimal year the coordinates are valid at; NaN when absent")
-        .def_rw("provenance_wkt", &spz::SpzExtensionGeoreferenceNiantic::provenanceWkt,
-                "WKT2 of the source compound CRS; provenance only, never a transform source")
+        .def_rw("provenance_crs", &spz::SpzExtensionGeoreferenceNiantic::provenanceCrs,
+                "Source compound CRS; provenance only, never a transform source")
+        .def_rw("provenance_crs_encoding",
+                &spz::SpzExtensionGeoreferenceNiantic::provenanceCrsEncoding,
+                "Serialization of provenance_crs: WKT2 (default) or PROJJSON")
         .def_static("type", &spz::SpzExtensionGeoreferenceNiantic::type,
                     "Static method to get the extension type enum value");
     m.def("is_known_ply_extension_element", &spz::isKnownPlyExtensionElement, nb::arg("element_name"),
