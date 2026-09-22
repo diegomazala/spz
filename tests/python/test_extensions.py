@@ -104,15 +104,20 @@ def test_toc_byte_offset_advances_with_extensions():
 # File layout when the georeference extension is the only extension:
 # fixed 32-byte header, then the record at offset 32:
 #   [u32 type @32][u32 byteLength @36][payload @40]
-# Payload offsets within the file: ext_version @40, flags @41, reserved @42,
-# crs_epsg @44, origin @48, rotation @72, scale @104, epoch @112, wkt_length @120,
-# wkt @124.
+# Payload offsets within the file: ext_version @40, flags @41, crs_id_length @42,
+# wkt_length @44, origin @48, rotation @72, scale @104, epoch @112, crs_id @120,
+# wkt @120+crs_id_length.
 _GEOREF_TYPE = 0x4E530001
 _GEOREF_RECORD_OFFSET = 32
 _GEOREF_PAYLOAD_OFFSET = 40
-_GEOREF_WKT_LENGTH_OFFSET = 120
-_GEOREF_FIXED_PAYLOAD_BYTES = 84
-assert _GEOREF_PAYLOAD_OFFSET + _GEOREF_FIXED_PAYLOAD_BYTES == _GEOREF_WKT_LENGTH_OFFSET + 4
+_GEOREF_CRS_ID_LENGTH_OFFSET = 42
+_GEOREF_WKT_LENGTH_OFFSET = 44
+_GEOREF_FIXED_PAYLOAD_BYTES = 80
+_GEOREF_CRS_ID_OFFSET = _GEOREF_PAYLOAD_OFFSET + _GEOREF_FIXED_PAYLOAD_BYTES
+# Guard against silent layout drift.
+assert _GEOREF_CRS_ID_LENGTH_OFFSET + 2 == _GEOREF_WKT_LENGTH_OFFSET
+assert _GEOREF_PAYLOAD_OFFSET + _GEOREF_FIXED_PAYLOAD_BYTES == _GEOREF_CRS_ID_OFFSET
+_GEOREF_MAX_CRS_ID_BYTES = 256
 
 _WKT_SAMPLE = (
     'COMPOUNDCRS["WGS 84 + EGM2008 height",'
@@ -120,9 +125,9 @@ _WKT_SAMPLE = (
 )
 
 
-def _make_georef_ext(wkt="", epoch=float("nan"), scale=0.9736):
+def _make_georef_ext(wkt="", epoch=float("nan"), scale=0.9736, crs_id="EPSG:4978"):
     ext = spz.SpzExtensionGeoreferenceNiantic()
-    ext.crs_epsg = 4978
+    ext.crs_id = crs_id
     ext.origin = [4194304.5, -555555.25, 4713930.125]
     ext.rotation = [0.5, 0.5, 0.5, 0.5]
     ext.scale = scale
@@ -167,7 +172,7 @@ def test_georeference_round_trip(wkt, epoch):
 
     loaded_ext = loaded.extensions[0]
     assert isinstance(loaded_ext, spz.SpzExtensionGeoreferenceNiantic)
-    assert loaded_ext.crs_epsg == ext.crs_epsg
+    assert loaded_ext.crs_id == ext.crs_id
     assert loaded_ext.origin == ext.origin
     assert loaded_ext.rotation == ext.rotation
     assert loaded_ext.scale == ext.scale
@@ -202,7 +207,7 @@ def test_georeference_coexists_with_safe_orbit():
     assert abs(loaded_orbit.safe_orbit_elevation_min - orbit.safe_orbit_elevation_min) < 1e-5
     assert abs(loaded_orbit.safe_orbit_elevation_max - orbit.safe_orbit_elevation_max) < 1e-5
     assert abs(loaded_orbit.safe_orbit_radius_min - orbit.safe_orbit_radius_min) < 1e-5
-    assert loaded_georef.crs_epsg == georef.crs_epsg
+    assert loaded_georef.crs_id == georef.crs_id
     assert loaded_georef.origin == georef.origin
     assert loaded_georef.rotation == georef.rotation
     assert loaded_georef.scale == georef.scale
@@ -272,6 +277,40 @@ def test_georeference_wkt_length_overrun_skipped():
 
 
 @pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
+def test_georeference_crs_id_length_overrun_skipped():
+    """A crs_id_length exceeding the payload is rejected and core data still loads."""
+    cloud = _make_cloud()
+    baseline = spz.load_spz(
+        _save_to_tmp(cloud, "georef_crsid_overrun_baseline.spz"), spz.UnpackOptions()
+    )
+
+    cloud.extensions = [_make_georef_ext(wkt=_WKT_SAMPLE)]
+    filename = _save_to_tmp(cloud, "georef_crsid_overrun.spz")
+    _patch_file(filename, _GEOREF_CRS_ID_LENGTH_OFFSET, struct.pack("<H", 0xFFFF))
+
+    loaded = spz.load_spz(filename, spz.UnpackOptions())
+    assert len(loaded.extensions) == 0
+    _assert_gaussians_equal(loaded, baseline)
+
+
+@pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
+def test_georeference_crs_id_at_size_cap_round_trips():
+    """A crs_id of exactly the 256-byte cap is accepted; one byte more is not."""
+    cloud = _make_cloud()
+    at_cap = "EPSG:" + "9" * (_GEOREF_MAX_CRS_ID_BYTES - len("EPSG:"))
+    assert len(at_cap) == _GEOREF_MAX_CRS_ID_BYTES
+
+    cloud.extensions = [_make_georef_ext(crs_id=at_cap)]
+    loaded = spz.load_spz(_save_to_tmp(cloud, "georef_crsid_cap.spz"), spz.UnpackOptions())
+    assert len(loaded.extensions) == 1
+    assert loaded.extensions[0].crs_id == at_cap
+
+    cloud.extensions = [_make_georef_ext(crs_id=at_cap + "9")]
+    loaded = spz.load_spz(_save_to_tmp(cloud, "georef_crsid_over_cap.spz"), spz.UnpackOptions())
+    assert len(loaded.extensions) == 0
+
+
+@pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
 def test_georeference_unsupported_version_skipped():
     """A payload with ext_version=2 is skipped and core data still loads."""
     cloud = _make_cloud()
@@ -287,15 +326,47 @@ def test_georeference_unsupported_version_skipped():
 
 
 @pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
-def test_georeference_reserved_epsg_zero_skipped():
-    """crs_epsg=0 is reserved/invalid in ext_version 1; the extension is skipped."""
+@pytest.mark.parametrize(
+    "crs_id",
+    ["", "4978", "EPSG:", ":4978", "EPSG:4978:1", "EPSG 4978", "EPSG:497 8"],
+    ids=["empty", "no_authority", "no_code", "empty_authority", "two_colons", "space", "inner_space"],
+)
+def test_georeference_malformed_crs_id_skipped(crs_id):
+    """A crs_id that is not a well-formed AUTHORITY:CODE is rejected; core data still loads."""
     cloud = _make_cloud()
-    baseline = spz.load_spz(_save_to_tmp(cloud, "georef_epsg0_baseline.spz"), spz.UnpackOptions())
+    baseline = spz.load_spz(_save_to_tmp(cloud, "georef_crsid_baseline.spz"), spz.UnpackOptions())
 
-    ext = _make_georef_ext()
-    ext.crs_epsg = 0
-    cloud.extensions = [ext]
-    filename = _save_to_tmp(cloud, "georef_epsg0.spz")
+    cloud.extensions = [_make_georef_ext(crs_id=crs_id)]
+    filename = _save_to_tmp(cloud, "georef_crsid.spz")
+
+    loaded = spz.load_spz(filename, spz.UnpackOptions())
+    assert len(loaded.extensions) == 0
+    _assert_gaussians_equal(loaded, baseline)
+
+
+@pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
+@pytest.mark.parametrize(
+    "crs_id", ["EPSG:4978", "IAU_2015:30100", "IGNF:LAMB93"], ids=["earth", "moon", "non_numeric"]
+)
+def test_georeference_crs_id_authorities_round_trip(crs_id):
+    """Any authority round-trips verbatim — the format is not tied to the EPSG registry."""
+    cloud = _make_cloud()
+    cloud.extensions = [_make_georef_ext(crs_id=crs_id)]
+
+    filename = _save_to_tmp(cloud, "georef_crsid_authority.spz")
+    loaded = spz.load_spz(filename, spz.UnpackOptions())
+    assert len(loaded.extensions) == 1
+    assert loaded.extensions[0].crs_id == crs_id
+
+
+@pytest.mark.skipif(not spz.has_extension_support(), reason="built without extension support")
+def test_georeference_oversized_crs_id_omitted_on_write():
+    """A crs_id beyond the 256-byte write cap is omitted, so readers reject the record."""
+    cloud = _make_cloud()
+    baseline = spz.load_spz(_save_to_tmp(cloud, "georef_bigcrsid_baseline.spz"), spz.UnpackOptions())
+
+    cloud.extensions = [_make_georef_ext(crs_id="EPSG:" + "9" * 256)]
+    filename = _save_to_tmp(cloud, "georef_bigcrsid.spz")
 
     loaded = spz.load_spz(filename, spz.UnpackOptions())
     assert len(loaded.extensions) == 0
@@ -333,7 +404,7 @@ def test_georeference_oversized_wkt_omitted_on_write():
     assert len(loaded.extensions) == 1
     e = loaded.extensions[0]
     assert e.wkt == ""
-    assert e.crs_epsg == ext.crs_epsg
+    assert e.crs_id == ext.crs_id
     assert e.origin == ext.origin
     assert e.rotation == ext.rotation
     assert e.scale == ext.scale

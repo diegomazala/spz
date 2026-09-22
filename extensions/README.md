@@ -194,32 +194,36 @@ To add a new extension type in the C++ codebase:
   # pack with from_coord=RUB → stored as RDF; load with to_coord=RUB → converted back automatically
   ```
 
-- **SPZ_NIANTIC_georeference** (`0x4E530001`) — Records a similarity transform that georeferences the asset: local positions map into an Earth-centered geocentric CRS. Implemented in `extensions/cc/georeference-niantic.h` and `georeference-niantic.cc`.
+- **SPZ_NIANTIC_georeference** (`0x4E530001`) — Records a similarity transform that georeferences the asset: local positions map into a body-fixed geocentric CRS. Implemented in `extensions/cc/georeference-niantic.h` and `georeference-niantic.cc`.
 
-  **Payload** (little-endian, byte-packed, 84 bytes fixed + variable WKT):
+  **Payload** (little-endian, byte-packed, 80 bytes fixed + variable `crs_id` and WKT):
 
   | Offset | Size | Field | Description |
   |--------|------|-------|-------------|
   | 0 | 1 | `ext_version` | `uint8_t`, must be 1 |
   | 1 | 1 | `flags` | `uint8_t`, bit 0 `has_epoch`, bit 1 `has_wkt` |
-  | 2 | 2 | `reserved` | `uint16_t`, writers must zero, readers must ignore |
-  | 4 | 4 | `crs_epsg` | `uint32_t`, EPSG code of the target geocentric CRS, e.g. 4978 (WGS84 ECEF). `0` is reserved/invalid in `ext_version` 1 |
+  | 2 | 2 | `crs_id_length` | `uint16_t`, bytes of the `crs_id` string |
+  | 4 | 4 | `wkt_length` | `uint32_t`, bytes of the WKT string, 0 if none |
   | 8 | 24 | `origin[3]` | `double`, meters, translation local origin → CRS |
   | 32 | 32 | `rotation[4]` | `double`, unit quaternion x, y, z, w, local → CRS |
   | 64 | 8 | `scale` | `double`, dimensionless uniform scale, local → CRS; must be finite and > 0 |
   | 72 | 8 | `epoch` | `double`, decimal year; writers write NaN when `has_epoch` = 0 |
-  | 80 | 4 | `wkt_length` | `uint32_t`, bytes of the WKT string, 0 if none |
-  | 84 | `wkt_length` | `wkt` | UTF-8 WKT2 string, **not** null-terminated |
+  | 80 | `crs_id_length` | `crs_id` | Target CRS as `AUTHORITY:CODE`, UTF-8, **not** null-terminated |
+  | 80 + `crs_id_length` | `wkt_length` | `wkt` | UTF-8 WKT2 string, **not** null-terminated |
 
-  **Semantics:** the transform maps local positions into the target CRS as `p_crs = scale * (q * p_local * q⁻¹) + origin`, applied to positions after any coordinate-system extension resolution; if `SPZ_ADOBE_coordinate_system` is absent, the local frame is the SPZ default (RUB). There is no runtime dependency on the coordinate-system extension — the interaction is spec-level only. `scale` is uniform (isotropic) only: it corrects for the scale ambiguity inherent to unreferenced reconstruction (e.g. monocular SfM), matching the classic 7-parameter Helmert/similarity transform used for local-to-global CRS registration. There is no anisotropic scale or shear field, and none should be added — those describe a deformed local frame, a different problem than this extension addresses. Post-transform heights are ellipsoidal by construction; `wkt` records the source compound CRS (including vertical datum) as provenance only, never as a target definition. This extension is a descriptor: the library never applies the transform to the Gaussian data.
+  **Target CRS identifier:** `crs_id` is authority-qualified — `"EPSG:4978"` (WGS84 ECEF), `"IAU_2015:30100"` (Moon) — rather than a bare EPSG code, because the EPSG registry is Earth-only. Reading the transform needs no registry lookup; readers should skip authorities they do not recognize.
+
+  **Semantics:** the transform maps local positions into the target CRS as `p_crs = scale * (q * p_local * q⁻¹) + origin`, applied to positions after any coordinate-system extension resolution; if `SPZ_ADOBE_coordinate_system` is absent, the local frame is the SPZ default (RUB). There is no runtime dependency on the coordinate-system extension — the interaction is spec-level only. `scale` is uniform (isotropic) only: it corrects for the scale ambiguity inherent to unreferenced reconstruction (e.g. monocular SfM), matching the classic 7-parameter Helmert/similarity transform used for local-to-global CRS registration. There is no anisotropic scale or shear field, and none should be added — those describe a deformed local frame, a different problem than this extension addresses. Post-transform heights are ellipsoidal by construction; `wkt` records the source compound CRS (including vertical datum) as provenance only, never as a target definition — the target is named by `crs_id`. This extension is a descriptor: the library never applies the transform to the Gaussian data.
 
   **Validation on load** (a rejected payload is skipped with a warning and the core data still loads):
 
   - `ext_version` must be 1; any other value rejects the payload.
-  - `crs_epsg` of `0` is reserved/invalid and rejects the payload; no other EPSG-registry validation is performed. A future extension version may support non-EPSG target CRS definitions via a dedicated field; the `wkt` field must not be repurposed for target definition under any mode.
+  - `crs_id` must be printable ASCII (no spaces) with exactly one `:`, both parts non-empty, at most 256 bytes; otherwise the payload is rejected. Unknown authorities and codes are accepted as written — no registry lookup. The `wkt` field must not be repurposed for target CRS definition.
   - `rotation` must be a unit quaternion within `1e-6`; otherwise it is normalized on load with a warning (a zero or non-finite norm rejects the payload).
   - `scale` must be finite and greater than zero; otherwise the payload is rejected.
-  - `wkt_length` must not exceed the remaining payload bytes; otherwise the payload is rejected.
-  - `reserved` is ignored on read. Unknown `flags` bits are ignored on read, never rejected.
+  - `crs_id_length + wkt_length` must not exceed the remaining payload bytes; otherwise the payload is rejected.
+  - Unknown `flags` bits are ignored on read, never rejected.
 
   **Validation on write:** a `wkt` longer than 1 MiB (2^20 bytes) is omitted with a warning — never truncated — keeping the `u32` record length well clear of overflow. Real WKT2 strings are a few KB.
+
+  An invalid `crs_id` costs the whole record, not just the field: `wkt` is optional provenance, but a transform with no target CRS is meaningless. Writers warn and emit the record anyway (omitting the string if it exceeds the 16-bit length field); readers reject it.

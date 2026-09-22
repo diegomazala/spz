@@ -34,7 +34,7 @@ SOFTWARE.
 namespace spz {
 
 // Records a similarity transform that georeferences the asset: positions in the asset's local
-// frame map into an Earth-centered geocentric CRS (identified by crsEpsg, e.g. 4978 = WGS84 ECEF)
+// frame map into a body-fixed geocentric CRS (identified by crsId, e.g. "EPSG:4978" = WGS84 ECEF)
 // as
 //
 //   p_crs = scale * (q * p_local * q^-1) + origin
@@ -44,6 +44,9 @@ namespace spz {
 // resolution; if SPZ_ADOBE_coordinate_system is absent, the local frame is the SPZ default (RUB).
 // There is no runtime dependency on the coordinate-system extension — the interaction is
 // spec-level only.
+//
+// crsId is authority-qualified rather than a bare EPSG code because the EPSG registry is
+// Earth-only; other bodies are registered elsewhere (e.g. "IAU_2015:30100" for the Moon).
 //
 // `scale` is uniform (isotropic) only, matching the classic 7-parameter Helmert/similarity
 // transform used for local-to-global CRS registration: it corrects for the scale ambiguity
@@ -64,16 +67,18 @@ struct SpzExtensionGeoreferenceNiantic : public SpzExtensionBase {
   // Maximum WKT size accepted on write. Keeps the u32 record length far from overflow; real WKT2
   // strings are a few KB. An oversized wkt is omitted (with a warning), never truncated.
   static constexpr uint32_t kMaxWktBytes = 1u << 20;
+  static constexpr uint16_t kMaxCrsIdBytes = 256;
 
-  // Target geocentric CRS as a registered EPSG code, e.g. 4978 (WGS84 ECEF). The value 0 is
-  // reserved/invalid in ext_version 1 (readers warn and skip); a future extension version may use
-  // it to signal a non-EPSG target CRS via a dedicated field.
-  uint32_t crsEpsg = 0;
+  // Target CRS as "AUTHORITY:CODE", e.g. "EPSG:4978". Required; invalid rejects the payload.
+  std::string crsId;
   std::array<double, 3> origin = {0.0, 0.0, 0.0};   // Meters, translation local origin -> CRS
   std::array<double, 4> rotation = {0.0, 0.0, 0.0, 1.0};  // Unit quaternion x, y, z, w, local -> CRS
   double scale = 1.0;  // Dimensionless uniform scale, local -> CRS; must be finite and > 0
   double epoch = std::numeric_limits<double>::quiet_NaN();  // Decimal year; NaN when absent
   std::string wkt;  // UTF-8 WKT2 string of the source compound CRS; empty when absent
+
+  // Printable ASCII, exactly one ':', both parts non-empty, <= kMaxCrsIdBytes. No registry lookup.
+  static bool isValidCrsId(const std::string& id);
 
   SpzExtensionGeoreferenceNiantic();
   uint32_t payloadBytes() const override;

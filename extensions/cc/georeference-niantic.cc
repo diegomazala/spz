@@ -47,22 +47,53 @@ std::streamoff remainingBytes(std::istream& is) {
 }
 
 constexpr double kUnitQuaternionTolerance = 1e-6;
+
+// Fixed section: ext_version(1) + flags(1) + crs_id_length(2) + wkt_length(4) + origin(24) +
+// rotation(32) + scale(8) + epoch(8), followed by crs_id then the WKT string.
+constexpr uint32_t kFixedPayloadBytes = 80;
 }  // namespace
+
+bool SpzExtensionGeoreferenceNiantic::isValidCrsId(const std::string& id) {
+  if (id.empty() || id.size() > kMaxCrsIdBytes) return false;
+  size_t colons = 0;
+  size_t colon = 0;
+  for (size_t i = 0; i < id.size(); ++i) {
+    // Printable ASCII only: rules out spaces, control bytes and multi-byte sequences.
+    const char c = id[i];
+    if (c < 0x21 || c > 0x7E) return false;
+    if (c == ':') {
+      ++colons;
+      colon = i;
+    }
+  }
+  return colons == 1 && colon != 0 && colon + 1 != id.size();
+}
 
 SpzExtensionGeoreferenceNiantic::SpzExtensionGeoreferenceNiantic()
     : SpzExtensionBase(SpzExtensionType::SPZ_NIANTIC_georeference) {}
 
 uint32_t SpzExtensionGeoreferenceNiantic::payloadBytes() const {
-  // Fixed section: ext_version(1) + flags(1) + reserved(2) + crs_epsg(4) + origin(24) +
-  // rotation(32) + scale(8) + epoch(8) + wkt_length(4) = 84 bytes, followed by the WKT string.
+  const uint64_t crsIdBytes = crsId.size() <= kMaxCrsIdBytes ? crsId.size() : 0;
   const uint64_t wktBytes = wkt.size() <= kMaxWktBytes ? wkt.size() : 0;
-  return static_cast<uint32_t>(84 + wktBytes);
+  return static_cast<uint32_t>(kFixedPayloadBytes + crsIdBytes + wktBytes);
 }
 
 void SpzExtensionGeoreferenceNiantic::write(std::ostream& os) const {
   const uint32_t t = static_cast<uint32_t>(extensionType);
   const uint32_t len = payloadBytes();
   const uint8_t extVersion = kExtVersion;
+  // Unlike the optional wkt, an invalid crs_id invalidates the whole record: a transform with no
+  // target is meaningless. Oversized values are omitted (16-bit length), the rest written as-is.
+  uint16_t crsIdLength = 0;
+  if (crsId.size() <= kMaxCrsIdBytes) {
+    crsIdLength = static_cast<uint16_t>(crsId.size());
+  }
+  if (!isValidCrsId(crsId)) {
+    SpzLog("[SPZ WARNING] GeoreferenceNiantic: crs_id is not a well-formed AUTHORITY:CODE "
+           "identifier of at most %u bytes (got %llu bytes) — readers will reject this record",
+           static_cast<unsigned>(kMaxCrsIdBytes),
+           static_cast<unsigned long long>(crsId.size()));
+  }
   uint32_t wktLength = static_cast<uint32_t>(wkt.size());
   if (wkt.size() > kMaxWktBytes) {
     SpzLog("[SPZ WARNING] GeoreferenceNiantic: wkt size %llu exceeds %u bytes — wkt omitted on write",
@@ -72,19 +103,20 @@ void SpzExtensionGeoreferenceNiantic::write(std::ostream& os) const {
   uint8_t flags = 0;
   if (!std::isnan(epoch)) flags |= kFlagHasEpoch;
   if (wktLength > 0) flags |= kFlagHasWkt;
-  const uint16_t reserved = 0;
-  SpzLog("[SPZ] Writing extension: GeoreferenceNiantic (epsg=%u)", static_cast<unsigned>(crsEpsg));
+  SpzLog("[SPZ] Writing extension: GeoreferenceNiantic (crs=%s)",
+         isValidCrsId(crsId) ? crsId.c_str() : "<invalid>");
   os.write(reinterpret_cast<const char*>(&t), sizeof(t));
   os.write(reinterpret_cast<const char*>(&len), sizeof(len));
   os.write(reinterpret_cast<const char*>(&extVersion), sizeof(extVersion));
   os.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
-  os.write(reinterpret_cast<const char*>(&reserved), sizeof(reserved));
-  os.write(reinterpret_cast<const char*>(&crsEpsg), sizeof(crsEpsg));
+  os.write(reinterpret_cast<const char*>(&crsIdLength), sizeof(crsIdLength));
+  os.write(reinterpret_cast<const char*>(&wktLength), sizeof(wktLength));
   os.write(reinterpret_cast<const char*>(origin.data()), sizeof(origin));
   os.write(reinterpret_cast<const char*>(rotation.data()), sizeof(rotation));
   os.write(reinterpret_cast<const char*>(&scale), sizeof(scale));
   os.write(reinterpret_cast<const char*>(&epoch), sizeof(epoch));
-  os.write(reinterpret_cast<const char*>(&wktLength), sizeof(wktLength));
+  if (crsIdLength > 0)
+    os.write(crsId.data(), static_cast<std::streamsize>(crsIdLength));
   if (wktLength > 0)
     os.write(wkt.data(), static_cast<std::streamsize>(wktLength));
 }
@@ -93,13 +125,12 @@ std::optional<SpzExtensionBasePtr> SpzExtensionGeoreferenceNiantic::read(std::is
   SpzLog("[SPZ] Found extension: GeoreferenceNiantic");
   uint8_t extVersion{};
   uint8_t flags{};
-  uint16_t reserved{};  // Ignored on read; writers must zero it.
   auto rec = std::make_shared<SpzExtensionGeoreferenceNiantic>();
+  uint16_t crsIdLength{};
   uint32_t wktLength{};
-  if (!readExact(is, extVersion) || !readExact(is, flags) || !readExact(is, reserved) ||
-      !readExact(is, rec->crsEpsg) || !readExact(is, rec->origin) ||
-      !readExact(is, rec->rotation) || !readExact(is, rec->scale) || !readExact(is, rec->epoch) ||
-      !readExact(is, wktLength)) {
+  if (!readExact(is, extVersion) || !readExact(is, flags) || !readExact(is, crsIdLength) ||
+      !readExact(is, wktLength) || !readExact(is, rec->origin) ||
+      !readExact(is, rec->rotation) || !readExact(is, rec->scale) || !readExact(is, rec->epoch)) {
     SpzLog("[SPZ WARNING] GeoreferenceNiantic: truncated payload — extension skipped");
     return std::nullopt;
   }
@@ -108,15 +139,25 @@ std::optional<SpzExtensionBasePtr> SpzExtensionGeoreferenceNiantic::read(std::is
            static_cast<unsigned>(extVersion), static_cast<unsigned>(kExtVersion));
     return std::nullopt;
   }
-  if (rec->crsEpsg == 0) {
-    SpzLog("[SPZ WARNING] GeoreferenceNiantic: crs_epsg 0 is reserved and invalid in ext_version 1 — extension skipped");
-    return std::nullopt;
-  }
   // Unknown flag bits are ignored; only the bits this version defines are interpreted.
   const std::streamoff remaining = remainingBytes(is);
-  if (remaining < 0 || static_cast<uint64_t>(wktLength) > static_cast<uint64_t>(remaining)) {
-    SpzLog("[SPZ WARNING] GeoreferenceNiantic: wkt_length %u exceeds remaining payload bytes — extension skipped",
-           static_cast<unsigned>(wktLength));
+  const uint64_t declared = static_cast<uint64_t>(crsIdLength) + wktLength;
+  if (remaining < 0 || declared > static_cast<uint64_t>(remaining)) {
+    SpzLog("[SPZ WARNING] GeoreferenceNiantic: crs_id_length %u + wkt_length %u exceed the "
+           "remaining payload bytes — extension skipped",
+           static_cast<unsigned>(crsIdLength), static_cast<unsigned>(wktLength));
+    return std::nullopt;
+  }
+  if (crsIdLength > 0) {
+    rec->crsId.resize(crsIdLength);
+    if (!is.read(rec->crsId.data(), static_cast<std::streamsize>(crsIdLength))) {
+      SpzLog("[SPZ WARNING] GeoreferenceNiantic: failed to read crs_id — extension skipped");
+      return std::nullopt;
+    }
+  }
+  if (!isValidCrsId(rec->crsId)) {
+    SpzLog("[SPZ WARNING] GeoreferenceNiantic: crs_id is empty or not a well-formed "
+           "AUTHORITY:CODE identifier — extension skipped");
     return std::nullopt;
   }
   if (wktLength > 0) {

@@ -37,7 +37,7 @@ void register_extensions(nb::module_& m) {
         .value("SPZ_ADOBE_coordinate_system", spz::SpzExtensionType::SPZ_ADOBE_coordinate_system,
                "Adobe coordinate system extension — records the native coordinate system of the asset")
         .value("SPZ_NIANTIC_georeference", spz::SpzExtensionType::SPZ_NIANTIC_georeference,
-               "Niantic georeference extension — similarity transform from the local frame to an Earth-centered CRS")
+               "Niantic georeference extension — similarity transform from the local frame to a body-fixed geocentric CRS")
         .export_values();
 
     nb::class_<spz::SpzExtensionBase>(m, "SpzExtensionBase")
@@ -62,8 +62,8 @@ void register_extensions(nb::module_& m) {
                     "Static method to get the extension type enum value");
     nb::class_<spz::SpzExtensionGeoreferenceNiantic, spz::SpzExtensionBase>(m, "SpzExtensionGeoreferenceNiantic")
         .def(nb::init<>())
-        .def_rw("crs_epsg", &spz::SpzExtensionGeoreferenceNiantic::crsEpsg,
-                "EPSG code of the target geocentric CRS, e.g. 4978 (WGS84 ECEF); 0 is reserved/invalid")
+        .def_rw("crs_id", &spz::SpzExtensionGeoreferenceNiantic::crsId,
+                "Target CRS as \"AUTHORITY:CODE\", e.g. \"EPSG:4978\"; required")
         .def_rw("origin", &spz::SpzExtensionGeoreferenceNiantic::origin,
                 "Translation from the local origin to the target CRS, in meters (x, y, z)")
         .def_rw("rotation", &spz::SpzExtensionGeoreferenceNiantic::rotation,

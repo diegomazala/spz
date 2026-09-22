@@ -23,8 +23,8 @@ export class SpzExtensionCoordinateSystemAdobe extends SpzExtensionBase {
 }
 
 export class SpzExtensionGeoreferenceNiantic extends SpzExtensionBase {
-  /** EPSG code of the target geocentric CRS, e.g. 4978 (WGS84 ECEF); 0 is reserved/invalid. */
-  crsEpsg: number;
+  /** Target CRS as `AUTHORITY:CODE`, e.g. `"EPSG:4978"`; required. */
+  crsId: string;
   /** Translation from the local origin to the target CRS, in meters (x, y, z). */
   origin: [number, number, number];
   /** Unit quaternion (x, y, z, w) rotating the local frame into the target CRS. */

@@ -71,7 +71,7 @@ void register_extensions() {
 
   ::emscripten::class_<spz::SpzExtensionGeoreferenceNiantic, ::emscripten::base<spz::SpzExtensionBase>>("SpzExtensionGeoreferenceNiantic")
       .constructor<>()
-      .property("crsEpsg", &spz::SpzExtensionGeoreferenceNiantic::crsEpsg)
+      .property("crsId", &spz::SpzExtensionGeoreferenceNiantic::crsId)
       .property("origin", &spz::SpzExtensionGeoreferenceNiantic::origin)
       .property("rotation", &spz::SpzExtensionGeoreferenceNiantic::rotation)
       .property("scale", &spz::SpzExtensionGeoreferenceNiantic::scale)
