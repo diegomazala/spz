@@ -55,18 +55,18 @@ namespace spz {
 // added — those describe a different problem (a deformed local frame) that this extension does
 // not address.
 //
-// Post-transform heights are ellipsoidal by construction. `wkt` optionally records the source
-// compound CRS (including vertical datum) as provenance only; readers must not use it to
-// transform data.
+// Post-transform heights are ellipsoidal by construction. `provenanceWkt` describes where the
+// transform came from, not where it goes: readers MUST NOT derive or apply a transform from it.
+// crsId and the numeric fields are the only authoritative mapping, so the two cannot drift.
 //
 // This extension is a descriptor: the library never applies the transform to Gaussian data.
 struct SpzExtensionGeoreferenceNiantic : public SpzExtensionBase {
   static constexpr uint8_t kExtVersion = 1;
   static constexpr uint8_t kFlagHasEpoch = 1 << 0;
-  static constexpr uint8_t kFlagHasWkt = 1 << 1;
-  // Maximum WKT size accepted on write. Keeps the u32 record length far from overflow; real WKT2
-  // strings are a few KB. An oversized wkt is omitted (with a warning), never truncated.
-  static constexpr uint32_t kMaxWktBytes = 1u << 20;
+  static constexpr uint8_t kFlagHasProvenanceWkt = 1 << 1;
+  // Keeps the u32 record length far from overflow; real WKT2 strings are a few KB. An oversized
+  // provenanceWkt is omitted (with a warning), never truncated.
+  static constexpr uint32_t kMaxProvenanceWktBytes = 1u << 20;
   static constexpr uint16_t kMaxCrsIdBytes = 256;
 
   // Target CRS as "AUTHORITY:CODE", e.g. "EPSG:4978". Required; invalid rejects the payload.
@@ -74,8 +74,13 @@ struct SpzExtensionGeoreferenceNiantic : public SpzExtensionBase {
   std::array<double, 3> origin = {0.0, 0.0, 0.0};   // Meters, translation local origin -> CRS
   std::array<double, 4> rotation = {0.0, 0.0, 0.0, 1.0};  // Unit quaternion x, y, z, w, local -> CRS
   double scale = 1.0;  // Dimensionless uniform scale, local -> CRS; must be finite and > 0
-  double epoch = std::numeric_limits<double>::quiet_NaN();  // Decimal year; NaN when absent
-  std::string wkt;  // UTF-8 WKT2 string of the source compound CRS; empty when absent
+  // Coordinate epoch: decimal year the coordinates are valid at in a dynamic frame (e.g. 2020.5
+  // for ITRF2014@2020.5), not the frame's own reference epoch. Authoritative over any epoch in
+  // provenanceWkt. NaN when absent.
+  double epoch = std::numeric_limits<double>::quiet_NaN();
+  // UTF-8 WKT2 of the source compound CRS (incl. vertical datum); provenance only, empty when
+  // absent.
+  std::string provenanceWkt;
 
   // Printable ASCII, exactly one ':', both parts non-empty, <= kMaxCrsIdBytes. No registry lookup.
   static bool isValidCrsId(const std::string& id);

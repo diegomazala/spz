@@ -31,10 +31,10 @@ export class SpzExtensionGeoreferenceNiantic extends SpzExtensionBase {
   rotation: [number, number, number, number];
   /** Dimensionless uniform scale from the local frame into the target CRS; must be finite and > 0. */
   scale: number;
-  /** Coordinate epoch as a decimal year; NaN when absent. */
+  /** Coordinate epoch: decimal year the coordinates are valid at; NaN when absent. */
   epoch: number;
-  /** WKT2 string of the source compound CRS (provenance only); empty when absent. */
-  wkt: string;
+  /** WKT2 of the source compound CRS; provenance only, never a transform source. */
+  provenanceWkt: string;
   constructor();
   static type(): SpzExtensionType;
 }

@@ -71,9 +71,9 @@ void register_extensions(nb::module_& m) {
         .def_rw("scale", &spz::SpzExtensionGeoreferenceNiantic::scale,
                 "Dimensionless uniform scale from the local frame into the target CRS; must be finite and > 0")
         .def_rw("epoch", &spz::SpzExtensionGeoreferenceNiantic::epoch,
-                "Coordinate epoch as a decimal year; NaN when absent")
-        .def_rw("wkt", &spz::SpzExtensionGeoreferenceNiantic::wkt,
-                "WKT2 string of the source compound CRS (provenance only); empty when absent")
+                "Coordinate epoch: decimal year the coordinates are valid at; NaN when absent")
+        .def_rw("provenance_wkt", &spz::SpzExtensionGeoreferenceNiantic::provenanceWkt,
+                "WKT2 of the source compound CRS; provenance only, never a transform source")
         .def_static("type", &spz::SpzExtensionGeoreferenceNiantic::type,
                     "Static method to get the extension type enum value");
     m.def("is_known_ply_extension_element", &spz::isKnownPlyExtensionElement, nb::arg("element_name"),

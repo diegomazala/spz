@@ -76,7 +76,7 @@ void register_extensions() {
       .property("rotation", &spz::SpzExtensionGeoreferenceNiantic::rotation)
       .property("scale", &spz::SpzExtensionGeoreferenceNiantic::scale)
       .property("epoch", &spz::SpzExtensionGeoreferenceNiantic::epoch)
-      .property("wkt", &spz::SpzExtensionGeoreferenceNiantic::wkt)
+      .property("provenanceWkt", &spz::SpzExtensionGeoreferenceNiantic::provenanceWkt)
       .class_function("type", &spz::SpzExtensionGeoreferenceNiantic::type);
 
   ::emscripten::function("isKnownPlyExtensionElement", &spz::isKnownPlyExtensionElement);
